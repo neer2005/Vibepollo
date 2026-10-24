@@ -37,6 +37,7 @@
 #include "src/logging.h"
 #include "src/platform/common.h"
 #include "utf_utils.h"
+#include "vibepollo_vmic.h"
 
 // Must be the last included file
 // clang-format off
@@ -1026,6 +1027,28 @@ namespace platf::audio {
       }
 
       return mic;
+    }
+
+    int init_mic_redirect_device() override {
+      if (mic_redirect_device) return 0;
+      auto device = std::make_unique<vibepollo_vmic_t>();
+      if (device->init() != 0) {
+        BOOST_LOG(warning) << "[mic] vibepollo_vmic_t::init() failed — Steam Streaming Microphone unavailable"sv;
+        return -1;
+      }
+      BOOST_LOG(info) << "[mic] Steam Streaming Microphone backend initialized"sv;
+      mic_redirect_device = std::move(device);
+      return 0;
+    }
+
+    void release_mic_redirect_device() override {
+      mic_redirect_device.reset();
+      BOOST_LOG(info) << "[mic] Steam Streaming Microphone backend released"sv;
+    }
+
+    int write_mic_pcm(const float *data, std::uint32_t count) override {
+      if (!mic_redirect_device) return -1;
+      return mic_redirect_device->write_pcm(data, count);
     }
 
     /**
@@ -2993,6 +3016,7 @@ namespace platf::audio {
     role_policy_t roles_;
     std::string assigned_sink;
     std::wstring capture_device_id;
+    std::unique_ptr<mic_redirect_backend_t> mic_redirect_device;
   };
 }  // namespace platf::audio
 

@@ -52,6 +52,25 @@ namespace platf {
     virtual std::unique_ptr<mic_t> microphone(const std::uint8_t *mapping, int channels, std::uint32_t sample_rate, std::uint32_t frame_size, bool continuous, bool host_audio_enabled) = 0;
 
     /**
+     * @brief Initialize the Steam Streaming Microphone redirect backend.
+     * @details Used by mic passthrough: decoded client mic PCM is rendered to
+     *          the Steam Streaming Microphone endpoint so host apps see it as a mic.
+     *          Default implementation reports unsupported.
+     */
+    virtual int init_mic_redirect_device() { return -1; }
+
+    /**
+     * @brief Release the Steam Streaming Microphone redirect backend.
+     */
+    virtual void release_mic_redirect_device() {}
+
+    /**
+     * @brief Write pre-decoded mono float PCM to the active mic redirect backend.
+     * @returns 0 on success, -1 when no backend is active.
+     */
+    virtual int write_mic_pcm(const float * /*samples*/, std::uint32_t /*count*/) { return -1; }
+
+    /**
      * @brief Check if the audio sink is available in the system.
      * @param sink Sink to be checked.
      * @returns True if available, false otherwise.
