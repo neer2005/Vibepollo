@@ -1237,6 +1237,45 @@ namespace confighttp {
     }
   }
 
+  void getMicStatus(resp_https_t response, req_https_t request) {
+    if (!authenticate(response, request)) {
+      return;
+    }
+    try {
+      const auto status = stream::get_mic_status();
+      const bool configured = !config::audio.mic_sink.empty();
+
+      bool endpoint_present = false;
+      if (configured) {
+        if (status.mic_active || status.capture_switched) {
+          // Mic is demonstrably working (or a live session holds the capture
+          // switch). Also avoids platf::audio_control(), whose factory runs the
+          // capture startup-restore guard — that guard would undo a live capture
+          // switch mid-session. capture_switched covers session overlap, where
+          // a new session's start resets the first-packet flag.
+          endpoint_present = true;
+        } else if (auto control = platf::audio_control()) {
+          endpoint_present = control->is_sink_available(config::audio.mic_sink);
+        }
+      }
+
+      nlohmann::json out;
+      out["configured"] = configured;
+      out["endpoint_present"] = endpoint_present;
+      out["session_active"] = status.session_active;
+      out["mic_active"] = status.mic_active;
+      if (status.has_last_session) {
+        out["last_session"] = {
+          {"packets_received", status.last_packets_received},
+          {"frames_written", status.last_frames_written},
+        };
+      }
+      send_response(response, out);
+    } catch (...) {
+      bad_request(response, request, "Failed to evaluate mic status");
+    }
+  }
+
   /**
    * @brief Health check for the Sunshine Vulkan HDR implicit layer (virtual-display HDR support).
    * @details `installed` reflects the actual HKLM registration; `enabled` reflects the configured
@@ -6427,6 +6466,7 @@ namespace confighttp {
     register_api_route("^/api/health/crashdump$", "GET", getCrashDumpStatus);
     register_api_route("^/api/health/crashdump/dismiss$", "POST", postCrashDumpDismiss);
 #endif
+    register_api_route("^/api/mic-status$", "GET", getMicStatus);
     register_api_route("^/api/apps/([A-Fa-f0-9-]+)/cover$", "GET", getAppCover);
     register_api_route("^/api/apps/([A-Fa-f0-9-]+)/icon$", "GET", getAppIcon);
     register_api_route("^/api/apps/([A-Fa-f0-9]{8}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{12})$", "DELETE", deleteApp);
