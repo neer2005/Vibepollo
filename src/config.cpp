@@ -987,6 +987,10 @@ namespace config {
   audio_t audio {
     {},  // audio_sink
     {},  // virtual_sink
+    "Speakers (Steam Streaming Microphone)",  // mic_sink
+    "Microphone (Steam Streaming Microphone)",  // mic_capture_device
+    50,  // mic_buffer_ms
+    2,   // mic_buffer_packets (default 2 = 40ms prebuffer; smooths packet delivery jitter)
     true,  // stream audio
     true,  // install_steam_drivers
     true,  // keep_sink_default
@@ -2151,6 +2155,13 @@ namespace config {
 
     string_f(vars, "audio_sink", audio.sink);
     string_f(vars, "virtual_sink", audio.virtual_sink);
+    string_f(vars, "mic_sink", audio.mic_sink);
+    string_f(vars, "mic_capture_device", audio.mic_capture_device);
+    int_between_f(vars, "mic_buffer_ms", audio.mic_buffer_ms, {10, 200});
+    // Minimum is 2, not 1: the WASAPI render stage holds a fixed two-packet (1920-frame)
+    // prebuffer before playout starts, so a configured value of 1 could never reduce
+    // startup buffering below 40 ms. Advertise the range that actually takes effect.
+    int_between_f(vars, "mic_buffer_packets", audio.mic_buffer_packets, {2, 16});
     bool_f(vars, "stream_audio", audio.stream);
     bool_f(vars, "audio_sink_capture_only", audio.sink_capture_only);
     bool_f(vars, "install_steam_audio_drivers", audio.install_steam_drivers);

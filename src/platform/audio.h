@@ -40,9 +40,29 @@ namespace platf {
     virtual ~mic_t() = default;
   };
 
+  // Snapshot of the default capture endpoint per role, saved before mic
+  // passthrough switches the default capture device and restored on session end.
+  struct capture_snapshot_t {
+    std::wstring console_id;
+    std::wstring comms_id;
+    std::wstring multimedia_id;
+  };
+
   class audio_control_t {
   public:
     virtual int set_sink(const std::string &sink) = 0;
+
+    // Default capture device management for mic passthrough. Default
+    // implementations report unsupported / do nothing; Windows overrides them.
+    virtual capture_snapshot_t snapshot_capture_defaults() { return {}; }
+
+    virtual void switch_capture_to([[maybe_unused]] const std::string &device_name) {}
+
+    virtual void restore_capture_from([[maybe_unused]] const capture_snapshot_t &snapshot) {}
+
+    virtual std::string get_current_default_capture_name() { return {}; }
+
+    virtual void reset_default_capture_to_first_real() {}
 
     // Select a loopback endpoint without changing system routing, when supported.
     virtual int set_capture_sink([[maybe_unused]] const std::string &sink) {
@@ -50,6 +70,25 @@ namespace platf {
     }
 
     virtual std::unique_ptr<mic_t> microphone(const std::uint8_t *mapping, int channels, std::uint32_t sample_rate, std::uint32_t frame_size, bool continuous, bool host_audio_enabled) = 0;
+
+    /**
+     * @brief Initialize the Steam Streaming Microphone redirect backend.
+     * @details Used by mic passthrough: decoded client mic PCM is rendered to
+     *          the Steam Streaming Microphone endpoint so host apps see it as a mic.
+     *          Default implementation reports unsupported.
+     */
+    virtual int init_mic_redirect_device() { return -1; }
+
+    /**
+     * @brief Release the Steam Streaming Microphone redirect backend.
+     */
+    virtual void release_mic_redirect_device() {}
+
+    /**
+     * @brief Write pre-decoded mono float PCM to the active mic redirect backend.
+     * @returns 0 on success, -1 when no backend is active.
+     */
+    virtual int write_mic_pcm(const float * /*samples*/, std::uint32_t /*count*/) { return -1; }
 
     /**
      * @brief Check if the audio sink is available in the system.

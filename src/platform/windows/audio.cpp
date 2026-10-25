@@ -37,6 +37,7 @@
 #include "src/logging.h"
 #include "src/platform/common.h"
 #include "utf_utils.h"
+#include "vibepollo_vmic.h"
 
 // Must be the last included file
 // clang-format off
@@ -1026,6 +1027,130 @@ namespace platf::audio {
       }
 
       return mic;
+    }
+
+    int init_mic_redirect_device() override {
+      if (mic_redirect_device) return 0;
+      auto device = std::make_unique<vibepollo_vmic_t>();
+      if (device->init() != 0) {
+        BOOST_LOG(warning) << "[mic] vibepollo_vmic_t::init() failed — Steam Streaming Microphone unavailable"sv;
+        return -1;
+      }
+      BOOST_LOG(info) << "[mic] Steam Streaming Microphone backend initialized"sv;
+      mic_redirect_device = std::move(device);
+      return 0;
+    }
+
+    void release_mic_redirect_device() override {
+      mic_redirect_device.reset();
+      BOOST_LOG(info) << "[mic] Steam Streaming Microphone backend released"sv;
+    }
+
+    int write_mic_pcm(const float *data, std::uint32_t count) override {
+      if (!mic_redirect_device) return -1;
+      return mic_redirect_device->write_pcm(data, count);
+    }
+
+    platf::capture_snapshot_t snapshot_capture_defaults() override {
+      platf::capture_snapshot_t snap;
+      auto get_id = [&](ERole role) -> std::wstring {
+        device_t dev;
+        if (FAILED(device_enum->GetDefaultAudioEndpoint(eCapture, role, &dev))) return {};
+        wstring_t id;
+        if (FAILED(dev->GetId(&id))) return {};
+        return std::wstring(id.get());
+      };
+      snap.console_id    = get_id(eConsole);
+      snap.comms_id      = get_id(eCommunications);
+      snap.multimedia_id = get_id(eMultimedia);
+      return snap;
+    }
+
+    void switch_capture_to(const std::string &device_name) override {
+      auto target_id = find_capture_device_id(from_utf8(device_name));
+      if (target_id.empty()) {
+        BOOST_LOG(warning) << "[mic] switch_capture_to: device not found: " << device_name;
+        return;
+      }
+      bool any_failed = false;
+      for (int x = 0; x < (int) ERole_enum_count; ++x) {
+        if (FAILED(policy->SetDefaultEndpoint(target_id.c_str(), (ERole) x))) {
+          BOOST_LOG(warning) << "[mic] SetDefaultEndpoint failed for role " << x << " on: " << device_name;
+          any_failed = true;
+        }
+      }
+      if (!any_failed)
+        BOOST_LOG(info) << "[mic] default capture switched to: " << device_name;
+      else
+        BOOST_LOG(warning) << "[mic] default capture switch partially failed for: " << device_name;
+    }
+
+    void restore_capture_from(const platf::capture_snapshot_t &snap) override {
+      auto restore_role = [&](const std::wstring &id, ERole role) {
+        if (id.empty()) return;
+        policy->SetDefaultEndpoint(id.c_str(), role);
+      };
+      restore_role(snap.console_id,    eConsole);
+      restore_role(snap.comms_id,      eCommunications);
+      restore_role(snap.multimedia_id, eMultimedia);
+      BOOST_LOG(info) << "[mic] default capture roles restored"sv;
+    }
+
+    std::string get_current_default_capture_name() override {
+      device_t dev;
+      if (FAILED(device_enum->GetDefaultAudioEndpoint(eCapture, eConsole, &dev))) return {};
+      prop_t prop;
+      if (FAILED(dev->OpenPropertyStore(STGM_READ, &prop))) return {};
+      prop_var_t pv;
+      if (SUCCEEDED(prop->GetValue(PKEY_Device_FriendlyName, &pv.prop)) && pv.prop.vt == VT_LPWSTR)
+        return to_utf8(pv.prop.pwszVal);
+      return {};
+    }
+
+    void reset_default_capture_to_first_real() override {
+      collection_t collection;
+      if (FAILED(device_enum->EnumAudioEndpoints(eCapture, DEVICE_STATE_ACTIVE, &collection))) return;
+      UINT count = 0;
+      collection->GetCount(&count);
+      for (UINT i = 0; i < count; ++i) {
+        device_t dev;
+        if (FAILED(collection->Item(i, &dev))) continue;
+        prop_t prop;
+        if (FAILED(dev->OpenPropertyStore(STGM_READ, &prop))) continue;
+        prop_var_t pv;
+        if (FAILED(prop->GetValue(PKEY_Device_FriendlyName, &pv.prop)) || pv.prop.vt != VT_LPWSTR) continue;
+        std::string name = to_utf8(pv.prop.pwszVal);
+        if (name.find("CABLE") != std::string::npos) continue;
+        wstring_t id;
+        if (FAILED(dev->GetId(&id))) continue;
+        for (int x = 0; x < (int) ERole_enum_count; ++x)
+          policy->SetDefaultEndpoint(id.get(), (ERole) x);
+        BOOST_LOG(info) << "[mic] reset_default_capture_to_first_real: " << name;
+        return;
+      }
+      BOOST_LOG(warning) << "[mic] reset_default_capture_to_first_real: no non-CABLE capture device found"sv;
+    }
+
+    std::wstring find_capture_device_id(const std::wstring &name) {
+      collection_t collection;
+      if (FAILED(device_enum->EnumAudioEndpoints(eCapture, DEVICE_STATE_ACTIVE, &collection))) return {};
+      UINT count = 0;
+      collection->GetCount(&count);
+      for (UINT i = 0; i < count; ++i) {
+        device_t dev;
+        if (FAILED(collection->Item(i, &dev))) continue;
+        prop_t prop;
+        if (FAILED(dev->OpenPropertyStore(STGM_READ, &prop))) continue;
+        prop_var_t pv;
+        if (SUCCEEDED(prop->GetValue(PKEY_Device_FriendlyName, &pv.prop)) && pv.prop.vt == VT_LPWSTR) {
+          if (std::wcscmp(pv.prop.pwszVal, name.c_str()) == 0) {
+            wstring_t id;
+            if (SUCCEEDED(dev->GetId(&id)))
+              return std::wstring(id.get());
+          }
+        }
+      }
+      return {};
     }
 
     /**
@@ -2993,6 +3118,7 @@ namespace platf::audio {
     role_policy_t roles_;
     std::string assigned_sink;
     std::wstring capture_device_id;
+    std::unique_ptr<mic_redirect_backend_t> mic_redirect_device;
   };
 }  // namespace platf::audio
 
@@ -3008,6 +3134,44 @@ namespace platf {
 
     if (control->init()) {
       return nullptr;
+    }
+
+    // Startup capture restore guard:
+    // If Vibepollo was hard-killed during a previous stream session, the RAII
+    // guard never ran and Windows default capture may still be set to the mic
+    // passthrough device. Detect and restore it now.
+    if (!config::audio.mic_capture_device.empty()) {
+      const auto state_file = platf::appdata() / "mic_capture_prev.txt";
+      const auto current_default = control->get_current_default_capture_name();
+
+      if (current_default == config::audio.mic_capture_device) {
+        // Current default matches the passthrough device — previous session
+        // did not clean up. Attempt restore.
+        if (std::filesystem::exists(state_file)) {
+          // State file contains the real pre-session default device name.
+          std::ifstream f(state_file);
+          std::string prev_device;
+          std::getline(f, prev_device);
+          f.close();
+          if (!prev_device.empty()) {
+            BOOST_LOG(info) << "[mic] Startup restore: previous session left default capture as '"
+                            << current_default << "' — restoring to '" << prev_device << "'";
+            control->switch_capture_to(prev_device);
+          } else {
+            BOOST_LOG(warning) << "[mic] Startup restore: state file empty — using reset_default_capture_to_first_real()";
+            control->reset_default_capture_to_first_real();
+          }
+          std::filesystem::remove(state_file);
+          BOOST_LOG(info) << "[mic] Startup restore: state file removed";
+        } else {
+          // State file missing but default is still on passthrough device.
+          // Fall back to resetting to first real non-CABLE capture device.
+          BOOST_LOG(warning) << "[mic] Startup restore: default capture is '"
+                             << current_default << "' but no state file found — "
+                             "using reset_default_capture_to_first_real()";
+          control->reset_default_capture_to_first_real();
+        }
+      }
     }
 
     // Heal an interrupted visibility transition before any enumeration. A

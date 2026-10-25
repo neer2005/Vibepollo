@@ -170,6 +170,47 @@ const isWindows = computed(() =>
     .toLocaleLowerCase()
     .includes('windows'),
 );
+
+interface MicStatus {
+  configured: boolean;
+  endpoint_present: boolean;
+  session_active: boolean;
+  mic_active: boolean;
+  last_session?: {
+    packets_received: number;
+    frames_written: number;
+  };
+}
+
+const micStatus = ref<MicStatus | null>(null);
+const micStatusLine = computed(() => {
+  const s = micStatus.value;
+  if (!s) return t('troubleshooting.mic_passthrough_status_loading');
+  if (!s.configured) return t('troubleshooting.mic_passthrough_status_not_configured');
+  if (!s.endpoint_present) return t('troubleshooting.mic_passthrough_status_unavailable');
+  if (s.mic_active) return t('troubleshooting.mic_passthrough_status_active');
+  return t('troubleshooting.mic_passthrough_status_waiting');
+});
+const micLastSessionLine = computed(() => {
+  const last = micStatus.value?.last_session;
+  if (!last) return '';
+  return t('troubleshooting.mic_passthrough_last_session', {
+    packets: last.packets_received,
+    frames: last.frames_written,
+  });
+});
+
+async function refreshMicStatus(): Promise<void> {
+  if (!isWindows.value) {
+    micStatus.value = null;
+    return;
+  }
+  try {
+    micStatus.value = await apiGet<MicStatus>('/api/mic-status');
+  } catch {
+    micStatus.value = null;
+  }
+}
 const isLinux = computed(
   () =>
     String(metadata.value?.platform ?? system.metadata?.platform ?? '').toLowerCase() === 'linux',
@@ -719,7 +760,9 @@ async function changePassword(): Promise<void> {
   }
 }
 
-onMounted(() => void load());
+onMounted(() => {
+  void load().then(() => void refreshMicStatus());
+});
 
 onBeforeUnmount(() => {
   for (const url of crashBundleObjectUrls) URL.revokeObjectURL(url);
@@ -944,6 +987,32 @@ onBeforeUnmount(() => {
         <p v-else class="maintenance-muted">
           {{ t('ui.maintenance.crash.noneFound') }}
         </p>
+      </section>
+
+      <section
+        v-if="isWindows"
+        class="maintenance-section"
+        aria-labelledby="mic-passthrough-title"
+      >
+        <div class="maintenance-section__heading">
+          <div>
+            <h2 id="mic-passthrough-title">
+              {{ t('troubleshooting.mic_passthrough') }}
+            </h2>
+            <p class="maintenance-muted">{{ micStatusLine }}</p>
+            <p v-if="micLastSessionLine" class="maintenance-muted">
+              {{ micLastSessionLine }}
+            </p>
+          </div>
+          <div>
+            <AppButton
+              :label="t('ui.integrations.actions.refreshStatus')"
+              variant="tertiary"
+              size="compact"
+              @click="refreshMicStatus"
+            />
+          </div>
+        </div>
       </section>
 
       <section
